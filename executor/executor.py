@@ -141,6 +141,36 @@ def list_result_blob_under_prefix(result_base: str):
     candidates = [b for b in blobs if not b.name.endswith('/')]
     return candidates
 
+def download_gcs_prefix(gs_prefix: str, local_dir: str):
+    """
+    Recursively download all files from a GCS prefix (folder) into local_dir.
+    Keeps folder hierarchy (so llama_model/* stays intact).
+    """
+    os.makedirs(local_dir, exist_ok=True)
+    storage_client = storage.Client()
+    bucket_name, prefix = parse_gs_uri(gs_prefix)
+    bucket = storage_client.bucket(bucket_name)
+
+    blobs = bucket.list_blobs(prefix=prefix)
+    downloaded_files = []
+
+    for blob in blobs:
+        # GCS "folders" are just empty keys ending with '/'
+        if blob.name.endswith("/"):
+            continue
+
+        # Preserve subdirectory structure
+        rel_path = blob.name[len(prefix):].lstrip("/")
+        local_path = os.path.join(local_dir, rel_path)
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+
+        blob.download_to_filename(local_path)
+        print(f"[GCS] Downloaded {blob.name} → {local_path}")
+        downloaded_files.append(local_path)
+
+    print(f"[GCS] ✅ Downloaded {len(downloaded_files)} files under {gs_prefix}")
+    return downloaded_files
+
 # ---------- Attestation endpoint ----------
 @app.get("/attestation")
 def get_attestation():
@@ -212,10 +242,28 @@ def execute(req: ExecuteRequest = Body(...)):
         os.chdir(workdir)
 
         # 2) download fixed workload from GCS into workdir
-        fixed_workload_gcs = "gs://yellowsense-technologies-cleanroom/workloads/fraud-detector.ipynb"
-        bucket, obj = parse_gs_uri(fixed_workload_gcs)
-        workload_local = os.path.join(workdir, "fraud-detector.ipynb")
-        storage_client.bucket(bucket).blob(obj).download_to_filename(workload_local)
+        fixed_workload_gcs_prefix = "gs://yellowsense-technologies-cleanroom/workloads/"
+        bucket_name, prefix = parse_gs_uri(fixed_workload_gcs_prefix)
+        bucket = storage_client.bucket(bucket_name)
+
+        workload_files = download_gcs_prefix(fixed_workload_gcs_prefix, workdir)
+        append_log(workflow_id, f"Downloaded {len(workload_files)} workload files ✅")
+        log.info(f"Downloaded workload contents: {workload_files}")
+
+        # Recursively download all objects under prefix
+        for blob in bucket.list_blobs(prefix=prefix):
+            rel_path = os.path.relpath(blob.name, prefix)
+            local_path = os.path.join(workdir, rel_path)
+            os.makedirs(os.path.dirname(local_path), exist_ok=True)
+            if not blob.name.endswith("/"):
+                blob.download_to_filename(local_path)
+                log.info(f"Downloaded workload file: {local_path}")
+                append_log(workflow_id, f"Downloaded workload file: {local_path}")
+
+        # Identify notebooks
+        workload_local = [os.path.join(workdir, f) for f in os.listdir(workdir) if f.endswith(".ipynb")]
+        if not workload_local:
+            raise HTTPException(status_code=400, detail="No notebook found in workload folder")
 
         log.info(f"Downloaded fixed workload to {workload_local}")
         append_log(workflow_id, f"Downloaded fixed workload to {workload_local}")
@@ -258,7 +306,7 @@ def execute(req: ExecuteRequest = Body(...)):
         # Note: The paths injected are now relative to the workdir, which is the CWD.
         prepared_nb_path = os.path.join(workdir, "prepared_workload.ipynb")
         inject_params_and_result_uploader(
-            input_nb=workload_local,
+            input_nb=workload_local[0],
             output_nb=prepared_nb_path,
             dataset_local_paths=plaintext_paths,
             result_base=req.result_base
@@ -297,29 +345,6 @@ def execute(req: ExecuteRequest = Body(...)):
         executed_target = req.executed_notebook_base + ".ipynb"
         upload_blob_from_file(executed_target, executed_nb_local)
         log.info(f"Uploaded executed notebook to {executed_target}")
-
-        # 7) locate result.* file
-        # candidates = list_result_blob_under_prefix(req.result_base)
-        # if not candidates:
-        #     raise HTTPException(status_code=500, detail="No result file found in results prefix after execution")
-
-        # chosen = next(
-        #     (b for b in candidates if os.path.basename(b.name).startswith(os.path.basename(parse_gs_uri(req.result_base)[1]))),
-        #     None
-        # )
-        # if not chosen:
-        #     raise HTTPException(status_code=500, detail="No matching result file found")
-
-        # result_gcs_path = f"gs://{chosen.bucket.name}/{chosen.name}"
-        # ext = os.path.splitext(chosen.name)[1].lstrip(".")
-
-        # return {
-        #     "status": "success",
-        #     "workflow_id": workflow_id,
-        #     "executed_notebook_path": executed_target,
-        #     "result_path": result_gcs_path,
-        #     "format": ext
-        # }
 
         candidates = list_result_blob_under_prefix(req.result_base)
         if not candidates:

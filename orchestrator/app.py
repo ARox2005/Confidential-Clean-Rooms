@@ -10,8 +10,17 @@ import requests
 from google.oauth2 import service_account
 import os
 from typing import List
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="Cleanroom Orchestrator")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # or ["http://localhost:3000"]
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 bq_client = bigquery.Client()
 storage_client = storage.Client()
