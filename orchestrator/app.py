@@ -37,7 +37,7 @@ EXECUTOR_URL = "http://localhost:8443"
 #---------------------------CHANGES FOR LOCAL TESTING---------------------------
 # SIGNER_EMAIL = "cleanroom-signer@clean-room-exp.iam.gserviceaccount.com" <- for cloud run
 
-SA_KEY_PATH = os.path.join(os.path.dirname(__file__), "yellowsense-technologies-17f4c4e3ed2c.json")  # <- for local testing
+SA_KEY_PATH = os.path.join(os.path.dirname(__file__), "signer-sa-key.json")  # <- for local testing
 creds = service_account.Credentials.from_service_account_file(SA_KEY_PATH)                # <- for local testing  
 #--------------------------------------------------------------------------------
 
@@ -494,3 +494,4 @@ def workflow_logs(workflow_id: str):
         return resp.json()
     except Exception as e:
         return f"Error contacting executor: {e}", 500
+
